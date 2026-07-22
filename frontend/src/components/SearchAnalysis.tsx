@@ -9,23 +9,7 @@ export default function SearchAnalysis() {
   const [wExact, setWExact] = useState<number>(0.5);
   const [wTrigram, setWTrigram] = useState<number>(0.3);
   const [wVector, setWVector] = useState<number>(0.2);
-  const [allTerms, setAllTerms] = useState<Term[]>([]);
-
-  // Fetch all terms to run frontend simulation of mathematical matching if query changes,
-  // or call backend API, or combine both for visual math breakout.
-  useEffect(() => {
-    const fetchAll = async () => {
-      try {
-        const res = await fetch('/api/v1/terminology/terms?limit=100');
-        if (res.ok) {
-          setAllTerms(await res.json());
-        }
-      } catch (e) {
-        console.error(e);
-      }
-    };
-    fetchAll();
-  }, []);
+  // Live database matching scheduler with debounce
 
   // Simple client-side trigram calculations for real-time mathematical accuracy and feedback
   const getTrigrams = (text: string) => {
@@ -47,79 +31,85 @@ export default function SearchAnalysis() {
     return intersection.size / union.size;
   };
 
-  const handleSearch = () => {
+  const handleSearch = async () => {
     if (!query.trim()) {
       setResults([]);
       return;
     }
 
     setLoading(true);
+    try {
+      const res = await fetch(`/api/v1/terminology/terms?q=${encodeURIComponent(query)}&limit=50`);
+      if (!res.ok) throw new Error();
+      const matchedTerms = await res.json();
 
-    // Run Hybrid Matching simulation to show detailed mathematical breakdown for each term
-    const scored = allTerms.map(t => {
-      const qLower = query.toLowerCase();
-      const engLower = t.english_term.toLowerCase();
-      const tamLower = t.tamil_term.toLowerCase();
+      const scored = matchedTerms.map((t: Term) => {
+        const qLower = query.toLowerCase();
+        const engLower = t.english_term.toLowerCase();
+        const tamLower = t.tamil_term.toLowerCase();
 
-      // 1. Exact string match score
-      const exactScore = (qLower === engLower || query === t.tamil_term) ? 1.0 : 0.0;
+        // 1. Exact string match score
+        const exactScore = (qLower === engLower || query === t.tamil_term) ? 1.0 : 0.0;
 
-      // 2. Trigram similarity score
-      const trigramScore = Math.max(
-        calculateTrigramSimilarity(query, t.english_term),
-        calculateTrigramSimilarity(query, t.tamil_term)
-      );
+        // 2. Trigram similarity score
+        const trigramScore = Math.max(
+          calculateTrigramSimilarity(query, t.english_term),
+          calculateTrigramSimilarity(query, t.tamil_term)
+        );
 
-      // 3. Simulated Vector Semantic match score (fallback semantic match)
-      // Since actual embeddings require full server round-trip, we simulate a semantic match using word roots,
-      // and slightly scale it to provide immediate beautiful, deterministic results.
-      let vectorScore = 0.0;
-      if (exactScore > 0) {
-        vectorScore = 1.0;
-      } else {
-        // Simple phonetic overlap / character subset similarity
-        const intersection = [...query].filter(c => t.english_term.includes(c) || t.pure_tamil_term.includes(c));
-        vectorScore = Math.min(0.9, (intersection.length / Math.max(query.length, t.english_term.length)) * 1.2);
-      }
-
-      // 4. Source Authority Coefficient
-      let cSource = 0.75;
-      if (t.source) {
-        const name = t.source.name;
-        if (name.includes("Anna University")) cSource = 1.0;
-        else if (name.includes("University of Madras")) cSource = 0.9;
-        else if (name.includes("Community")) cSource = 0.7;
-      }
-
-      // 5. Composite Score formula:
-      // Score = w_exact * exactScore + w_trigram * trigramScore + w_vector * vectorScore * cSource
-      const rawComposite = (wExact * exactScore) + (wTrigram * trigramScore) + (wVector * vectorScore * cSource);
-      const compositeScore = Math.min(1.0, Math.round(rawComposite * 1000) / 1000);
-
-      return {
-        ...t,
-        math: {
-          exact: exactScore,
-          trigram: Math.round(trigramScore * 100) / 100,
-          vector: Math.round(vectorScore * 100) / 100,
-          cSource,
-          composite: compositeScore
+        // 3. Simulated Vector Semantic match score
+        let vectorScore = 0.0;
+        if (exactScore > 0) {
+          vectorScore = 1.0;
+        } else {
+          const intersection = [...query].filter(c => t.english_term.includes(c) || t.pure_tamil_term.includes(c));
+          vectorScore = Math.min(0.9, (intersection.length / Math.max(query.length, t.english_term.length)) * 1.2);
         }
-      };
-    });
 
-    // Sort by composite score descending
-    const filtered = scored
-      .filter(t => t.math.composite > 0.1)
-      .sort((a, b) => b.math.composite - a.math.composite);
+        // 4. Source Authority Coefficient
+        let cSource = 0.75;
+        if (t.source) {
+          const name = t.source.name;
+          if (name.includes("Anna University")) cSource = 1.0;
+          else if (name.includes("University of Madras")) cSource = 0.9;
+          else if (name.includes("Community")) cSource = 0.7;
+        }
 
-    setResults(filtered.slice(0, 10));
-    setLoading(false);
+        // 5. Composite Score formula:
+        const rawComposite = (wExact * exactScore) + (wTrigram * trigramScore) + (wVector * vectorScore * cSource);
+        const compositeScore = Math.min(1.0, Math.round(rawComposite * 1000) / 1000);
+
+        return {
+          ...t,
+          math: {
+            exact: exactScore,
+            trigram: Math.round(trigramScore * 100) / 100,
+            vector: Math.round(vectorScore * 100) / 100,
+            cSource,
+            composite: compositeScore
+          }
+        };
+      });
+
+      const filtered = scored
+        .filter((t: any) => t.math.composite > 0.1)
+        .sort((a: any, b: any) => b.math.composite - a.math.composite);
+
+      setResults(filtered.slice(0, 10));
+    } catch (err) {
+      console.error("Live search failed:", err);
+      setResults([]);
+    } finally {
+      setLoading(false);
+    }
   };
 
   useEffect(() => {
-    handleSearch();
-  }, [query, wExact, wTrigram, wVector, allTerms]);
+    const delayDebounce = setTimeout(() => {
+      handleSearch();
+    }, 300);
+    return () => clearTimeout(delayDebounce);
+  }, [query, wExact, wTrigram, wVector]);
 
   return (
     <div id="search-analysis-tab" className="grid grid-cols-1 lg:grid-cols-3 gap-6">

@@ -10,6 +10,7 @@ from app.db.base import Base
 from app.db.session import engine
 from app.api.v1.terminology import router as terminology_router
 from app.api.v1.linter import router as linter_router
+from app.api.v1.editor import router as editor_router
 
 # Setup Logging
 setup_logging()
@@ -46,6 +47,7 @@ app.add_middleware(
 # Include routers
 app.include_router(terminology_router, prefix=f"{settings.API_V1_STR}/terminology", tags=["Terminology"])
 app.include_router(linter_router, prefix=f"{settings.API_V1_STR}/linter", tags=["Linter"])
+app.include_router(editor_router, prefix="/api/editor", tags=["Editor autocomplete"])
 
 
 @app.get("/health")

@@ -5,8 +5,8 @@ import { motion, AnimatePresence } from 'motion/react';
 import { 
   Sparkles, Copy, Check, FileText, AlertTriangle, Info, 
   Settings, Award, ShieldCheck, CheckCircle2, RotateCcw, 
-  ArrowRight, Bold, Italic, Heading1, Heading2, List as ListIcon, 
-  Code, Play, Terminal, Wand2, Plus 
+  ArrowRight, Bold, Italic, Code, Play, Terminal, Wand2, Plus,
+  ChevronDown
 } from 'lucide-react';
 import { LintResponse, LintWarning } from '../types';
 import { LinterHighlighter } from './TipTapHighlighter';
@@ -40,6 +40,33 @@ export default function LinterPanel({
   // Dev Sim Terminal state
   const [terminalLogs, setTerminalLogs] = useState<string[]>([]);
   const [isBuilding, setIsBuilding] = useState<boolean>(false);
+
+  // Draft selector states
+  const [activeDraftType, setActiveDraftType] = useState<'pure' | 'phonetic' | 'english'>('pure');
+  const [showDraftDropdown, setShowDraftDropdown] = useState<boolean>(false);
+
+  // Autocomplete Suggestions States
+  const [suggestions, setSuggestions] = useState<Array<{ text: string; confidence: number }>>([]);
+  const [activeSuggestionIdx, setActiveSuggestionIdx] = useState<number>(0);
+  const [showSuggestions, setShowSuggestions] = useState<boolean>(false);
+  const [suggestionRect, setSuggestionRect] = useState<{ top: number; left: number } | null>(null);
+  const [autocompleteLoading, setAutocompleteLoading] = useState<boolean>(false);
+
+  const suggestionsRef = useRef(suggestions);
+  const showSuggestionsRef = useRef(showSuggestions);
+  const activeIdxRef = useRef(activeSuggestionIdx);
+
+  useEffect(() => {
+    suggestionsRef.current = suggestions;
+  }, [suggestions]);
+
+  useEffect(() => {
+    showSuggestionsRef.current = showSuggestions;
+  }, [showSuggestions]);
+
+  useEffect(() => {
+    activeIdxRef.current = activeSuggestionIdx;
+  }, [activeSuggestionIdx]);
 
   // Load workspace slots from localStorage or default to [1, 2, 3]
   const [workspaces, setWorkspaces] = useState<number[]>(() => {
@@ -97,6 +124,34 @@ export default function LinterPanel({
       attributes: {
         class: 'focus:outline-none min-h-[220px] max-h-[400px] overflow-y-auto p-4 text-sm leading-relaxed text-slate-800 dark:text-slate-200',
       },
+      handleKeyDown: (view, event) => {
+        if (showSuggestionsRef.current && suggestionsRef.current.length > 0) {
+          if (event.key === 'ArrowDown') {
+            event.preventDefault();
+            setActiveSuggestionIdx(prev => (prev + 1) % suggestionsRef.current.length);
+            return true;
+          }
+          if (event.key === 'ArrowUp') {
+            event.preventDefault();
+            setActiveSuggestionIdx(prev => (prev - 1 + suggestionsRef.current.length) % suggestionsRef.current.length);
+            return true;
+          }
+          if (event.key === 'Tab' || event.key === 'Enter') {
+            event.preventDefault();
+            insertSuggestion(suggestionsRef.current[activeIdxRef.current].text);
+            return true;
+          }
+          if (event.key === 'Escape') {
+            event.preventDefault();
+            setShowSuggestions(false);
+            return true;
+          }
+        }
+        return false;
+      }
+    },
+    onBlur: () => {
+      setTimeout(() => setShowSuggestions(false), 200);
     },
     onUpdate: ({ editor }) => {
       const plainText = editor.getText();
@@ -108,6 +163,100 @@ export default function LinterPanel({
       localStorage.setItem(`linter_preset_${activeIdx}`, plainText);
     },
   });
+
+  const insertSuggestion = (suggestionText: string) => {
+    if (!editor) return;
+    
+    const { state } = editor;
+    const { selection } = state;
+    const anchor = selection.anchor;
+    
+    const textBefore = editor.getText().substring(0, anchor - 1);
+    const words = textBefore.split(/\s+/);
+    const lastWord = words[words.length - 1] || "";
+    
+    const startPos = anchor - lastWord.length;
+    const endPos = anchor;
+    
+    editor.chain()
+      .focus()
+      .insertContentAt({ from: startPos, to: endPos }, suggestionText + " ")
+      .run();
+      
+    setShowSuggestions(false);
+  };
+
+  const fetchAutocomplete = async (tier: 'db' | 'llm') => {
+    if (!editor) return;
+    
+    const { state } = editor;
+    const { selection } = state;
+    const anchor = selection.anchor;
+    const textBefore = editor.getText().substring(0, anchor - 1);
+    
+    if (!textBefore.trim() || anchor <= 1) {
+      setShowSuggestions(false);
+      return;
+    }
+    
+    try {
+      setAutocompleteLoading(true);
+      const res = await fetch('/api/editor/next-word', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          text: editor.getText(),
+          cursorPosition: anchor - 1,
+          tier: tier
+        })
+      });
+      
+      if (!res.ok) throw new Error();
+      const data = await res.json();
+      
+      if (data.suggestions && data.suggestions.length > 0) {
+        setSuggestions(data.suggestions);
+        setActiveSuggestionIdx(0);
+        
+        const coordinates = editor.view.coordsAtPos(anchor);
+        const editorEl = document.getElementById('tiptap-editor-container');
+        if (editorEl && coordinates) {
+          const rect = editorEl.getBoundingClientRect();
+          const topPos = coordinates.top - rect.top + editorEl.scrollTop + 22;
+          const leftPos = coordinates.left - rect.left;
+          
+          setSuggestionRect({
+            top: topPos,
+            left: Math.max(8, Math.min(leftPos, rect.width - 240))
+          });
+          setShowSuggestions(true);
+        }
+      } else {
+        setShowSuggestions(false);
+      }
+    } catch (err) {
+      setShowSuggestions(false);
+    } finally {
+      setAutocompleteLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!editor) return;
+    
+    const dbTimeout = setTimeout(() => {
+      fetchAutocomplete('db');
+    }, 200);
+    
+    const llmTimeout = setTimeout(() => {
+      fetchAutocomplete('llm');
+    }, 1000);
+    
+    return () => {
+      clearTimeout(dbTimeout);
+      clearTimeout(llmTimeout);
+    };
+  }, [text, editor?.state.selection.anchor]);
 
   // Call lint API
   const handleLint = async (inputText: string) => {
@@ -381,27 +530,6 @@ export default function LinterPanel({
                 <Italic className="w-4 h-4" />
               </button>
               <button
-                onClick={() => editor.chain().focus().toggleHeading({ level: 1 }).run()}
-                className={`p-1.5 rounded hover:bg-slate-100 dark:hover:bg-slate-800 ${editor.isActive('heading', { level: 1 }) ? 'text-emerald-500 bg-emerald-50 dark:bg-emerald-950/30' : 'text-slate-500'}`}
-                title="Heading 1"
-              >
-                <Heading1 className="w-4 h-4" />
-              </button>
-              <button
-                onClick={() => editor.chain().focus().toggleHeading({ level: 2 }).run()}
-                className={`p-1.5 rounded hover:bg-slate-100 dark:hover:bg-slate-800 ${editor.isActive('heading', { level: 2 }) ? 'text-emerald-500 bg-emerald-50 dark:bg-emerald-950/30' : 'text-slate-500'}`}
-                title="Heading 2"
-              >
-                <Heading2 className="w-4 h-4" />
-              </button>
-              <button
-                onClick={() => editor.chain().focus().toggleBulletList().run()}
-                className={`p-1.5 rounded hover:bg-slate-100 dark:hover:bg-slate-800 ${editor.isActive('bulletList') ? 'text-emerald-500 bg-emerald-50 dark:bg-emerald-950/30' : 'text-slate-500'}`}
-                title="Bullet List"
-              >
-                <ListIcon className="w-4 h-4" />
-              </button>
-              <button
                 onClick={() => editor.chain().focus().toggleCodeBlock().run()}
                 className={`p-1.5 rounded hover:bg-slate-100 dark:hover:bg-slate-800 ${editor.isActive('codeBlock') ? 'text-emerald-500 bg-emerald-50 dark:bg-emerald-950/30' : 'text-slate-500'}`}
                 title="Code Block"
@@ -418,8 +546,45 @@ export default function LinterPanel({
           )}
 
           {/* Editor Input Area */}
-          <div className="flex-grow min-h-[220px] bg-slate-50/20 dark:bg-slate-950/5 relative">
+          <div id="tiptap-editor-container" className="flex-grow min-h-[220px] bg-slate-50/20 dark:bg-slate-950/5 relative overflow-y-auto">
             <EditorContent editor={editor} />
+
+            {/* Autocomplete floating suggestions overlay */}
+            {showSuggestions && suggestions.length > 0 && suggestionRect && (
+              <div
+                className="absolute z-50 bg-white/95 dark:bg-slate-900/95 backdrop-blur-md border border-slate-200/80 dark:border-slate-800/80 rounded-2xl shadow-xl p-1.5 flex flex-col gap-0.5 min-w-[220px] transition-all duration-150 animate-in fade-in slide-in-from-top-2"
+                style={{
+                  top: `${suggestionRect.top}px`,
+                  left: `${suggestionRect.left}px`,
+                }}
+              >
+                {suggestions.map((item, idx) => (
+                  <button
+                    key={idx}
+                    type="button"
+                    onClick={() => insertSuggestion(item.text)}
+                    className={`w-full text-left px-3 py-1.5 rounded-xl text-xs font-semibold flex items-center justify-between transition-all gap-4 cursor-pointer ${
+                      idx === activeSuggestionIdx
+                        ? 'bg-emerald-600 text-white shadow-sm'
+                        : 'text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
+                    }`}
+                  >
+                    <span className="truncate">{item.text}</span>
+                    <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded-md ${
+                      idx === activeSuggestionIdx
+                        ? 'bg-emerald-700/60 text-emerald-100'
+                        : 'bg-slate-100 dark:bg-slate-800 text-slate-400 dark:text-slate-500'
+                    }`}>
+                      {Math.round(item.confidence * 100)}%
+                    </span>
+                  </button>
+                ))}
+                <div className="border-t border-slate-100 dark:border-slate-800/60 mt-1 px-3 py-1 text-[9px] text-slate-400 font-semibold flex items-center justify-between">
+                  <span>↑↓ Navigate</span>
+                  <span>Tab Accept</span>
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Action Footer */}
@@ -459,44 +624,97 @@ export default function LinterPanel({
         {/* PERFECTED REWRITES BOX */}
         {result && (
           <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl p-6 shadow-sm flex flex-col gap-4">
-            <div className="flex justify-between items-center pb-2 border-b border-slate-100 dark:border-slate-800">
-              <h4 className="text-sm font-bold text-slate-800 dark:text-slate-100 flex items-center gap-1.5">
-                <Wand2 className="w-4 h-4 text-emerald-500 animate-pulse" /> Unified Refactored Drafts
-              </h4>
-              <button
-                onClick={() => copyToClipboard('pure', result.suggested_rewrite_pure)}
-                className="text-xs text-emerald-600 dark:text-emerald-400 font-bold hover:underline flex items-center gap-1"
-              >
-                {copiedText === 'pure' ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
-                {copiedText === 'pure' ? 'Copied Pure Tamil Draft' : 'Copy Pure Draft'}
-              </button>
-            </div>
-            
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div className="p-4 bg-slate-50 dark:bg-slate-950/20 border border-slate-100 dark:border-slate-800 rounded-2xl flex flex-col justify-between">
-                <div>
-                  <span className="text-[10px] font-bold text-emerald-600 bg-emerald-50 dark:bg-emerald-950/40 px-1.5 py-0.5 rounded tracking-wide uppercase mb-2 inline-block">Pure Classical Synonyms</span>
-                  <p className="text-xs font-semibold text-slate-700 dark:text-slate-200 leading-relaxed">
-                    {result.suggested_rewrite_pure}
-                  </p>
+            <div className="flex flex-wrap justify-between items-center pb-3 border-b border-slate-100 dark:border-slate-800 gap-4">
+              <div className="flex items-center gap-3">
+                <h4 className="text-sm font-bold text-slate-800 dark:text-slate-100 flex items-center gap-1.5">
+                  <Wand2 className="w-4 h-4 text-emerald-500 animate-pulse" /> Unified Refactored Drafts
+                </h4>
+                
+                {/* Custom dropdown selector */}
+                <div className="relative inline-block text-left">
+                  <button
+                    type="button"
+                    onClick={() => setShowDraftDropdown(prev => !prev)}
+                    className="flex items-center justify-between gap-1.5 px-3 py-1.5 bg-slate-50/50 dark:bg-slate-950/30 border border-slate-200 dark:border-slate-800 rounded-xl text-xs font-bold text-slate-700 dark:text-slate-300 hover:border-emerald-500/50 transition cursor-pointer"
+                  >
+                    <span>
+                      {activeDraftType === 'pure' && 'Pure Tamil'}
+                      {activeDraftType === 'phonetic' && 'Phonetic Rhythm'}
+                      {activeDraftType === 'english' && 'Pure English'}
+                    </span>
+                    <ChevronDown className={`w-3.5 h-3.5 text-slate-400 transition-transform duration-200 ${showDraftDropdown ? 'rotate-180' : ''}`} />
+                  </button>
+
+                  <AnimatePresence>
+                    {showDraftDropdown && (
+                      <>
+                        <div 
+                          className="fixed inset-0 z-10" 
+                          onClick={() => setShowDraftDropdown(false)}
+                        />
+                        <motion.div
+                          initial={{ opacity: 0, scale: 0.95, y: -4 }}
+                          animate={{ opacity: 1, scale: 1, y: 0 }}
+                          exit={{ opacity: 0, scale: 0.95, y: -4 }}
+                          transition={{ duration: 0.15 }}
+                          className="absolute left-0 mt-2 w-56 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800/80 shadow-xl z-20 p-1.5 flex flex-col gap-0.5"
+                        >
+                          {[
+                            { id: 'pure', label: 'Pure Tamil Translation' },
+                            { id: 'phonetic', label: 'Tamil-English Phonetic Rhythm' },
+                            { id: 'english', label: 'Pure English Translation' }
+                          ].map(opt => (
+                            <button
+                              key={opt.id}
+                              type="button"
+                              onClick={() => {
+                                setActiveDraftType(opt.id as any);
+                                setShowDraftDropdown(false);
+                              }}
+                              className={`w-full text-left px-3 py-2 rounded-xl text-xs font-semibold flex items-center justify-between transition-colors cursor-pointer ${
+                                activeDraftType === opt.id
+                                  ? 'bg-emerald-50 dark:bg-emerald-950/20 text-emerald-600 dark:text-emerald-400'
+                                  : 'text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-950/20'
+                              }`}
+                            >
+                              <span>{opt.label}</span>
+                              {activeDraftType === opt.id && <Check className="w-3.5 h-3.5 text-emerald-500" />}
+                            </button>
+                          ))}
+                        </motion.div>
+                      </>
+                    )}
+                  </AnimatePresence>
                 </div>
               </div>
 
-              <div className="p-4 bg-slate-50 dark:bg-slate-950/20 border border-slate-100 dark:border-slate-800 rounded-2xl flex flex-col justify-between">
-                <div>
-                  <span className="text-[10px] font-bold text-slate-500 bg-slate-100 dark:bg-slate-800 px-1.5 py-0.5 rounded tracking-wide uppercase mb-2 inline-block">Tamil-English Phonetic Rhythm</span>
-                  <p className="text-xs font-semibold text-slate-700 dark:text-slate-200 leading-relaxed">
-                    {result.suggested_rewrite_phonetic}
-                  </p>
-                </div>
-                <div className="flex justify-end mt-3">
-                  <button
-                    onClick={() => copyToClipboard('phonetic', result.suggested_rewrite_phonetic)}
-                    className="text-[10px] text-slate-400 font-semibold hover:text-slate-600 dark:hover:text-slate-200 flex items-center gap-1"
-                  >
-                    {copiedText === 'phonetic' ? 'Copied!' : 'Copy Phonetic Draft'}
-                  </button>
-                </div>
+              <button
+                onClick={() => {
+                  const content = 
+                    activeDraftType === 'pure' ? result.suggested_rewrite_pure :
+                    activeDraftType === 'phonetic' ? result.suggested_rewrite_phonetic :
+                    result.suggested_rewrite_english;
+                  copyToClipboard(activeDraftType as any, content);
+                }}
+                className="text-xs text-emerald-600 dark:text-emerald-400 font-bold hover:underline flex items-center gap-1 cursor-pointer"
+              >
+                {copiedText === activeDraftType ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+                {copiedText === activeDraftType ? 'Copied to Clipboard' : 'Copy Active Draft'}
+              </button>
+            </div>
+            
+            <div className="p-5 bg-slate-50/50 dark:bg-slate-950/15 border border-slate-100 dark:border-slate-800/80 rounded-3xl min-h-[100px] flex flex-col justify-between">
+              <div>
+                <span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-3 inline-block">
+                  {activeDraftType === 'pure' && 'Pure Classical Synonyms Translation'}
+                  {activeDraftType === 'phonetic' && 'Tamil-English Phonetic Rhythm Translation'}
+                  {activeDraftType === 'english' && 'Pure English Translation'}
+                </span>
+                <p className="text-xs font-semibold text-slate-700 dark:text-slate-200 leading-relaxed whitespace-pre-wrap">
+                  {activeDraftType === 'pure' && result.suggested_rewrite_pure}
+                  {activeDraftType === 'phonetic' && result.suggested_rewrite_phonetic}
+                  {activeDraftType === 'english' && result.suggested_rewrite_english}
+                </p>
               </div>
             </div>
           </div>

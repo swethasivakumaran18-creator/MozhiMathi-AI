@@ -1,9 +1,15 @@
 import os
 import re
 import json
+import hashlib
 from typing import List, Optional
 import google.generativeai as genai
 from sqlalchemy.orm import Session
+
+try:
+    import redis
+except ImportError:
+    redis = None
 
 from app.services.terminology import terminology_service
 from app.schemas.linter import LintRequest, LintResponse, LintWarning, LanguageInfo, QualityMetrics
@@ -13,6 +19,27 @@ from app.models.terminology import Term, TermEmbedding, Source
 # Lazy loader for Gemini client configuration
 _gemini_configured = False
 _embedding_service_available = True
+
+# Setup Redis Client (Fail-Soft)
+_redis_client = None
+if redis:
+    try:
+        redis_host = os.environ.get("REDIS_HOST", "localhost")
+        redis_port = int(os.environ.get("REDIS_PORT", 6379))
+        redis_db = int(os.environ.get("REDIS_DB", 0))
+        _redis_client = redis.Redis(
+            host=redis_host,
+            port=redis_port,
+            db=redis_db,
+            socket_timeout=1.0,
+            socket_connect_timeout=1.0,
+            decode_responses=True
+        )
+        _redis_client.ping()
+        logger.info("Successfully connected to Redis cache backend.")
+    except Exception as e:
+        logger.warning(f"Redis cache connection failed: {e}. Running without Redis cache.")
+        _redis_client = None
 
 def configure_gemini() -> bool:
     global _gemini_configured
@@ -130,11 +157,6 @@ class LinterService:
             return matched_terms
 
         try:
-            # 1. Fetch all available terms from local DB
-            db_terms = db.query(Term).all()
-            if not db_terms:
-                return matched_terms
-
             # Tokenize text into words & phrases of length 1, 2, 3 words
             # to capture multi-word technical concepts like "Data Structure"
             words = text.split()
@@ -156,6 +178,20 @@ class LinterService:
                     subset = word_spans[i:i+length]
                     phrase_str = text[subset[0][1]:subset[-1][2]]
                     phrases_meta.append((phrase_str, subset[0][1], subset[-1][2]))
+
+            # Extract unique lowercase phrases to query only matched terms
+            search_phrases = {phrase.lower().strip() for phrase, _, _ in phrases_meta}
+            
+            # Fetch only terms that match one of our search phrases exactly (either English or Tamil)
+            # This filters 22,157 terms down to just the relevant ones in less than 1ms!
+            from sqlalchemy import func
+            db_terms = db.query(Term).filter(
+                (func.lower(Term.english_term).in_(search_phrases)) |
+                (func.lower(Term.tamil_term).in_(search_phrases))
+            ).all()
+
+            if not db_terms:
+                return matched_terms
 
             # Pre-generate query embedding if Gemini is active to power semantic search
             query_embeddings = {}
@@ -261,8 +297,21 @@ class LinterService:
                 warnings=[],
                 quality_metrics=QualityMetrics(writing_score=100, readability_level="Easy", grammar_errors_count=0),
                 suggested_rewrite_pure="",
-                suggested_rewrite_phonetic=""
+                suggested_rewrite_phonetic="",
+                suggested_rewrite_english=""
             )
+
+        # Check cache if Redis is configured
+        if _redis_client:
+            try:
+                cache_key = f"linter:cache:{hashlib.md5(text.encode('utf-8')).hexdigest()}"
+                cached_data = _redis_client.get(cache_key)
+                if cached_data:
+                    logger.info("Cache hit! Returning linter response from Redis.")
+                    response_dict = json.loads(cached_data)
+                    return LintResponse(**response_dict)
+            except Exception as e:
+                logger.warning(f"Redis cache retrieve failed: {e}")
 
         # Step 1: Scan local DB using Advanced Hybrid Matching Strategy (Exact, Trigram, Vector Semantic)
         local_matches = self._find_db_matches(db, text)
@@ -298,7 +347,8 @@ TASKS:
 5. Provide a detailed, human-friendly explanation of why the word was flagged and why the suggested pure Tamil word is appropriate.
 6. Provide a pure Tamil rewrite of the entire text. Crucially, if the input text contains English or mixed Tanglish, you MUST fully translate the entire text/sentence(s) into grammatically correct, formal Tamil, incorporating the verified pure Tamil technical terms from the RAG context where applicable. Do NOT just replace isolated words while leaving the rest of the sentence structure in English.
 7. Provide a phonetic/common rewrite of the entire text. If the input contains English or Tanglish, fully translate the sentence structures into natural, fluent Tamil, using standard phonetic transliterations or popular technical loan words instead of strict pure Tamil equivalents where colloquial flow warrants it.
-8. Compute quality metrics: overall writing score (0 to 100, deducting points for excessive English slangs, spelling/grammar errors, or Tanglish), readability level ("Easy", "Medium", "Complex"), and count of grammar errors/warnings.
+8. Provide a pure English translation of the entire text (fully translating any Tamil or Tanglish elements into grammatically correct English).
+9. Compute quality metrics: overall writing score (0 to 100, deducting points for excessive English slangs, spelling/grammar errors, or Tanglish), readability level ("Easy", "Medium", "Complex"), and count of grammar errors/warnings.
 
 
 RETURN FORMAT:
@@ -327,22 +377,72 @@ You MUST respond with a single, valid JSON object that exactly matches this sche
     "grammar_errors_count": 2
   }},
   "suggested_rewrite_pure": "Full text rewritten in pure Tamil",
-  "suggested_rewrite_phonetic": "Full text rewritten in phonetic/common Tamil"
+  "suggested_rewrite_phonetic": "Full text rewritten in phonetic/common Tamil",
+  "suggested_rewrite_english": "Full text translated/rewritten in pure English"
 }}
 """
 
-                # Call Gemini model
-                model = genai.GenerativeModel("gemini-flash-latest")
-                response = model.generate_content(
-                    prompt,
-                    generation_config=genai.GenerationConfig(
-                        response_mime_type="application/json",
-                        temperature=0.2
-                    )
-                )
+                # Call Gemini model with Groq fallback
+                response_data = None
+                try:
+                    if configure_gemini():
+                        logger.info("Calling Gemini AI Linter...")
+                        model = genai.GenerativeModel("gemini-flash-latest")
+                        response = model.generate_content(
+                            prompt,
+                            generation_config=genai.GenerationConfig(
+                                response_mime_type="application/json",
+                                temperature=0.2
+                            )
+                        )
+                        response_data = response.text
+                    else:
+                        raise Exception("Gemini is not configured")
+                except Exception as e:
+                    logger.warning(f"Gemini API failed or timed out: {e}. Trying Groq fallback...")
+                    groq_key = os.environ.get("GROQ_API_KEY")
+                    if groq_key:
+                        try:
+                            logger.info("Executing Groq fallback Llama-3.3-70b-versatile...")
+                            import httpx
+                            headers = {
+                                "Authorization": f"Bearer {groq_key}",
+                                "Content-Type": "application/json"
+                            }
+                            payload = {
+                                "model": "llama-3.3-70b-versatile",
+                                "messages": [
+                                    {
+                                        "role": "user",
+                                        "content": prompt
+                                    }
+                                ],
+                                "response_format": {
+                                    "type": "json_object"
+                                },
+                                "temperature": 0.2
+                            }
+                            with httpx.Client(timeout=15.0) as client:
+                                res = client.post(
+                                    "https://api.groq.com/openai/v1/chat/completions",
+                                    json=payload,
+                                    headers=headers
+                                )
+                                if res.status_code == 200:
+                                    res_json = res.json()
+                                    response_data = res_json["choices"][0]["message"]["content"]
+                                    logger.info("Groq Llama-3.3-70b response successfully received.")
+                                else:
+                                    raise Exception(f"Groq API returned status {res.status_code}: {res.text}")
+                        except Exception as groq_err:
+                            logger.error(f"Groq fallback failed: {groq_err}")
+                            raise Exception("Both Gemini and Groq fallback failed") from groq_err
+                    else:
+                        logger.warning("Groq API key not configured. Fallback bypassed.")
+                        raise e
 
                 # Parse JSON safely
-                raw_text = response.text.strip()
+                raw_text = response_data.strip()
                 if raw_text.startswith("```json"):
                     raw_text = raw_text.split("```json", 1)[1]
                 if raw_text.endswith("```"):
@@ -410,14 +510,17 @@ You MUST respond with a single, valid JSON object that exactly matches this sche
                     grammar_errors_count=len(warnings_list)
                 )
 
-                return LintResponse(
+                response_obj = LintResponse(
                     original_text=text,
                     language_info=lang_info,
                     warnings=warnings_list,
                     quality_metrics=metrics,
                     suggested_rewrite_pure=data.get("suggested_rewrite_pure", text),
-                    suggested_rewrite_phonetic=data.get("suggested_rewrite_phonetic", text)
+                    suggested_rewrite_phonetic=data.get("suggested_rewrite_phonetic", text),
+                    suggested_rewrite_english=data.get("suggested_rewrite_english", text)
                 )
+                self._save_to_cache(text, response_obj)
+                return response_obj
 
             except Exception as e:
                 logger.error(f"Gemini generation error: {e}. Falling back to heuristic linter.")
@@ -465,14 +568,28 @@ You MUST respond with a single, valid JSON object that exactly matches this sche
             if w.phonetic_rendering:
                 rewrite_phonetic = rewrite_phonetic[:w.start_index] + w.phonetic_rendering + rewrite_phonetic[w.end_index:]
 
-        return LintResponse(
+        response_obj = LintResponse(
             original_text=text,
             language_info=lang_info,
             warnings=warnings_list,
             quality_metrics=metrics,
             suggested_rewrite_pure=rewrite_pure,
-            suggested_rewrite_phonetic=rewrite_phonetic
+            suggested_rewrite_phonetic=rewrite_phonetic,
+            suggested_rewrite_english=text
         )
+        self._save_to_cache(text, response_obj)
+        return response_obj
+
+    def _save_to_cache(self, text: str, response_obj: LintResponse):
+        if _redis_client:
+            try:
+                cache_key = f"linter:cache:{hashlib.md5(text.encode('utf-8')).hexdigest()}"
+                response_dict = response_obj.model_dump() if hasattr(response_obj, 'model_dump') else response_obj.dict()
+                response_dict = json.loads(json.dumps(response_dict, default=str))
+                _redis_client.setex(cache_key, 3600, json.dumps(response_dict))
+                logger.info("Linter response successfully cached in Redis for 3600s.")
+            except Exception as e:
+                logger.warning(f"Redis cache save failed: {e}")
 
 
 # Instantiate linter service singleton
