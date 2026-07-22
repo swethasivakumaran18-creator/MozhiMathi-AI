@@ -10,12 +10,18 @@ import TerminologyDirectory from './components/TerminologyDirectory';
 import SearchAnalysis from './components/SearchAnalysis';
 import SettingsPanel from './components/SettingsPanel';
 import ApiDocs from './components/ApiDocs';
+import { LintResponse } from './types';
 
 export type AppTab = 'editor' | 'dictionary' | 'search' | 'settings' | 'apidocs';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<AppTab>('editor');
   const [dbCount, setDbCount] = useState<number>(0);
+  const [editorText, setEditorText] = useState<string>(() => {
+    const activeIdx = localStorage.getItem('linter_active_preset') || '1';
+    return localStorage.getItem(`linter_preset_${activeIdx}`) || '';
+  });
+  const [lintResult, setLintResult] = useState<LintResponse | null>(null);
 
   const fetchDbCount = async () => {
     try {
@@ -48,7 +54,7 @@ export default function App() {
             </div>
             <div>
               <h1 className="text-lg font-black tracking-tight text-slate-900 dark:text-white flex items-center gap-1.5">
-                செம்மொழி <span className="text-emerald-600 dark:text-emerald-400">Linter</span>
+                கலைச்சொல் <span className="text-emerald-600 dark:text-emerald-400">Linter</span>
               </h1>
               <p className="text-[10px] text-slate-400 dark:text-slate-500 font-bold tracking-wider uppercase">
                 Classical Tamil Technical Terminology Suite
@@ -224,7 +230,13 @@ export default function App() {
               exit={{ opacity: 0, y: -10 }}
               transition={{ duration: 0.15 }}
             >
-              <LinterPanel onLintSuccess={fetchDbCount} />
+              <LinterPanel 
+                onLintSuccess={fetchDbCount} 
+                initialText={editorText}
+                onTextChange={setEditorText}
+                initialResult={lintResult}
+                onResultChange={setLintResult}
+              />
             </motion.div>
           )}
 
@@ -281,7 +293,7 @@ export default function App() {
       {/* 4. Clean Footer */}
       <footer className="border-t border-slate-200 dark:border-slate-900 bg-white dark:bg-slate-950 py-8 mt-12 transition-all">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex flex-col md:flex-row justify-between items-center gap-4 text-xs text-slate-400">
-          <p>© {new Date().getFullYear()} செம்மொழி Linter. Curating Pure Tamil Technical Vocabulary.</p>
+          <p>© {new Date().getFullYear()} கலைச்சொல் Linter. Curating Pure Tamil Technical Vocabulary.</p>
           <div className="flex gap-4">
             <span className="flex items-center gap-1">
               <CheckCircle className="w-3.5 h-3.5 text-emerald-500" /> Compliant with Classical Lexicons & Anna University Terminology Standards

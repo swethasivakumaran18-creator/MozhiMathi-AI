@@ -1,3 +1,7 @@
+import os
+from dotenv import load_dotenv
+load_dotenv()
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
@@ -17,7 +21,7 @@ try:
     Base.metadata.create_all(bind=engine)
     logger.info("Database tables initialized successfully.")
     # Seed the database with high-quality tech terminology
-    from backend.app.db.seed import seed_db
+    from app.db.seed import seed_db
     seed_db()
 except Exception as e:
     logger.error(f"Error initializing database tables: {e}")
@@ -51,4 +55,4 @@ def health_check():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("backend.app.main:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("app.main:app", host="0.0.0.0", port=8000, reload=True)

@@ -12,6 +12,7 @@ from app.models.terminology import Term, TermEmbedding, Source
 
 # Lazy loader for Gemini client configuration
 _gemini_configured = False
+_embedding_service_available = True
 
 def configure_gemini() -> bool:
     global _gemini_configured
@@ -63,11 +64,12 @@ def cosine_similarity(v1: List[float], v2: List[float]) -> float:
 
 
 def get_embedding(text: str) -> List[float]:
-    if not _gemini_configured:
+    global _embedding_service_available
+    if not _gemini_configured or not _embedding_service_available:
         return []
     try:
         response = genai.embed_content(
-            model="models/text-embedding-004",
+            model="models/gemini-embedding-001",
             content=text,
             task_type="RETRIEVAL_QUERY"
         )
@@ -82,6 +84,10 @@ def get_embedding(text: str) -> List[float]:
         return []
     except Exception as e:
         logger.warning(f"Embedding generation skipped/failed: {e}")
+        # If we get a 404 or other permanent error, disable the embedding service to prevent thundering herd API calls
+        if "404" in str(e) or "not found" in str(e).lower() or "Method not found" in str(e):
+            _embedding_service_available = False
+            logger.warning("Disabling embedding service due to unsupported model or endpoint.")
         return []
 
 
@@ -99,7 +105,7 @@ def get_or_create_term_embedding(db: Session, term_id: int, term_text: str) -> L
             emb_obj = TermEmbedding(
                 term_id=term_id,
                 embedding_vector=json.dumps(vector),
-                model_name="text-embedding-004"
+                model_name="gemini-embedding-001"
             )
             db.add(emb_obj)
             db.commit()
@@ -177,24 +183,8 @@ class LinterService:
                     if t.tamil_term:
                         m_trigram = max(m_trigram, trigram_similarity(phrase, t.tamil_term))
 
-                    # C. Vector Semantic Matching
-                    m_vector = 0.0
-                    if configure_gemini():
-                        # Try to load cached vector from DB
-                        t_emb = get_or_create_term_embedding(db, t.id, t.english_term)
-                        if t_emb:
-                            # Generate on-the-fly embedding for this short query phrase
-                            if phrase not in query_embeddings:
-                                query_embeddings[phrase] = get_embedding(phrase)
-                            q_emb = query_embeddings[phrase]
-                            if q_emb:
-                                m_vector = cosine_similarity(q_emb, t_emb)
-                            else:
-                                m_vector = m_trigram  # Graceful fallback to trigram
-                        else:
-                            m_vector = m_trigram
-                    else:
-                        m_vector = m_trigram  # Heuristic fallback when API keys are not active
+                    # C. Vector Semantic Matching (Disabled on-the-fly calls to prevent hitting free tier limits)
+                    m_vector = m_trigram
 
                     # D. Source Authority Weight Scaling
                     c_source = 0.75
@@ -306,9 +296,10 @@ TASKS:
 3. Identify all technical slang, English loan words, or foreign jargon that have clear pure Tamil equivalents. Include their start_index and end_index positions in the original text (0-based character indexing).
 4. Map the identified words to the correct pure Tamil equivalents and phonetic/loan equivalents where colloquial flow warrants it.
 5. Provide a detailed, human-friendly explanation of why the word was flagged and why the suggested pure Tamil word is appropriate.
-6. Provide a pure Tamil rewrite of the entire text (replacing all slangs/loan words with pure Tamil alternatives).
-7. Provide a phonetic/common rewrite of the entire text (keeping well-known technical terms or phonetic renderings for simple colloquial flow).
+6. Provide a pure Tamil rewrite of the entire text. Crucially, if the input text contains English or mixed Tanglish, you MUST fully translate the entire text/sentence(s) into grammatically correct, formal Tamil, incorporating the verified pure Tamil technical terms from the RAG context where applicable. Do NOT just replace isolated words while leaving the rest of the sentence structure in English.
+7. Provide a phonetic/common rewrite of the entire text. If the input contains English or Tanglish, fully translate the sentence structures into natural, fluent Tamil, using standard phonetic transliterations or popular technical loan words instead of strict pure Tamil equivalents where colloquial flow warrants it.
 8. Compute quality metrics: overall writing score (0 to 100, deducting points for excessive English slangs, spelling/grammar errors, or Tanglish), readability level ("Easy", "Medium", "Complex"), and count of grammar errors/warnings.
+
 
 RETURN FORMAT:
 You MUST respond with a single, valid JSON object that exactly matches this schema. Do not include any markdown fences like ```json or ```, just the plain JSON string:
@@ -341,7 +332,7 @@ You MUST respond with a single, valid JSON object that exactly matches this sche
 """
 
                 # Call Gemini model
-                model = genai.GenerativeModel("gemini-3.5-flash")
+                model = genai.GenerativeModel("gemini-flash-latest")
                 response = model.generate_content(
                     prompt,
                     generation_config=genai.GenerationConfig(

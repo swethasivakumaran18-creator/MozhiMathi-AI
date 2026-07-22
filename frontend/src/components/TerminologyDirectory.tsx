@@ -53,16 +53,33 @@ export default function TerminologyDirectory({ onTermAdded }: Props) {
     }
   };
 
-  const fetchTerms = async () => {
+  const PAGE_SIZE = 15;
+  const [hasMore, setHasMore] = useState<boolean>(true);
+
+  const fetchTerms = async (reset: boolean = false, currentOffset?: number) => {
     try {
       const queryParams = new URLSearchParams();
       if (searchQuery) queryParams.append('q', searchQuery);
       if (selectedDomain !== 'all') queryParams.append('domain_id', selectedDomain);
       if (selectedCategory !== 'all') queryParams.append('category_id', selectedCategory);
       
+      const offset = reset ? 0 : (currentOffset !== undefined ? currentOffset : terms.length);
+      queryParams.append('skip', offset.toString());
+      queryParams.append('limit', PAGE_SIZE.toString());
+      
       const res = await fetch(`/api/v1/terminology/terms?${queryParams.toString()}`);
       if (res.ok) {
-        setTerms(await res.json());
+        const newTerms = await res.json();
+        if (reset) {
+          setTerms(newTerms);
+        } else {
+          setTerms(prev => {
+            const existingIds = new Set(prev.map(t => t.id));
+            const filteredNew = newTerms.filter((t: Term) => !existingIds.has(t.id));
+            return [...prev, ...filteredNew];
+          });
+        }
+        setHasMore(newTerms.length === PAGE_SIZE);
       }
     } catch (e) {
       console.error('Error fetching terms: ', e);
@@ -74,7 +91,7 @@ export default function TerminologyDirectory({ onTermAdded }: Props) {
   }, []);
 
   useEffect(() => {
-    fetchTerms();
+    fetchTerms(true, 0);
   }, [searchQuery, selectedDomain, selectedCategory]);
 
   const handleAddTerm = async (e: React.FormEvent) => {
@@ -125,7 +142,7 @@ export default function TerminologyDirectory({ onTermAdded }: Props) {
       setNewExample('');
       setNewExampleEn('');
       
-      fetchTerms();
+      fetchTerms(true, 0);
       if (onTermAdded) onTermAdded();
       
       setTimeout(() => {
@@ -254,6 +271,18 @@ export default function TerminologyDirectory({ onTermAdded }: Props) {
           ))
         )}
       </div>
+      
+      {/* Pagination "Show More" Button */}
+      {hasMore && terms.length > 0 && (
+        <div className="flex justify-center mt-6">
+          <button
+            onClick={() => fetchTerms(false, terms.length)}
+            className="px-5 py-2.5 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 text-xs font-bold rounded-xl transition cursor-pointer flex items-center gap-1.5 shadow-sm border border-slate-200/50 dark:border-slate-700/50"
+          >
+            Show More Terms (மேலும் காட்டு)
+          </button>
+        </div>
+      )}
 
       {/* Add New Term Dialog */}
       <AnimatePresence>
