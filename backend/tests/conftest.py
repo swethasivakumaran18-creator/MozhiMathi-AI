@@ -3,10 +3,10 @@ from typing import Generator
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
-from backend.app.db.base import Base
-from backend.app.models.terminology import Term, Domain, Category, Source, Definition, Example, Synonym, TermRelationship, TermEmbedding
-from backend.app.api.deps import get_db
-from backend.app.main import app
+from app.db.base import Base
+from app.models.terminology import Term, Domain, Category, Source, Definition, Example, Synonym, TermRelationship, TermEmbedding
+from app.api.deps import get_db
+from app.main import app
 
 from sqlalchemy.pool import StaticPool
 

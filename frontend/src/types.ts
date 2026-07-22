@@ -29,6 +29,7 @@ export interface LintResponse {
   quality_metrics: QualityMetrics;
   suggested_rewrite_pure: string;
   suggested_rewrite_phonetic: string;
+  suggested_rewrite_english: string;
 }
 
 export interface Definition {

@@ -39,3 +39,4 @@ class LintResponse(BaseModel):
     quality_metrics: QualityMetrics
     suggested_rewrite_pure: str = Field(..., description="Fully rewritten text using pure Tamil terminology")
     suggested_rewrite_phonetic: str = Field(..., description="Fully rewritten text using common phonetic/loan terminology where preferred for colloquial readability")
+    suggested_rewrite_english: str = Field(..., description="Fully translated text in grammatically correct pure English")

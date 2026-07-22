@@ -2,10 +2,10 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
-from backend.app.schemas.terminology import TermCreate
-from backend.app.services.terminology import terminology_service
-from backend.app.services.linter import linter_service
-from backend.app.schemas.linter import LintRequest
+from app.schemas.terminology import TermCreate
+from app.services.terminology import terminology_service
+from app.services.linter import linter_service
+from app.schemas.linter import LintRequest
 
 
 def test_lint_empty_text(db: Session):

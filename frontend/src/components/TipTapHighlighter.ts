@@ -101,11 +101,15 @@ export const LinterHighlighter = Extension.create<LinterHighlighterOptions>({
                   const rect = flaggedSpan.getBoundingClientRect();
                   extensionThis.options.onHoverWarning(match, rect, { from, to });
                 }
+              } else {
+                // Clear warning when moving mouse to unflagged text nodes or empty paragraphs
+                extensionThis.options.onHoverWarning(null, null, null);
               }
               return false;
             },
             mouseleave(view, event) {
-              // Note: We handle mouse leaving the popup inside the React side.
+              // Clear warning when mouse completely exits the editor view area
+              extensionThis.options.onHoverWarning(null, null, null);
               return false;
             }
           }

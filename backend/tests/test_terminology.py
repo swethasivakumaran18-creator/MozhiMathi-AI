@@ -1,8 +1,8 @@
 from fastapi import status
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
-from backend.app.services.terminology import terminology_service
-from backend.app.schemas.terminology import DomainCreate, CategoryCreate, SourceCreate, TermCreate, DefinitionCreate, SynonymCreate, ExampleCreate
+from app.services.terminology import terminology_service
+from app.schemas.terminology import DomainCreate, CategoryCreate, SourceCreate, TermCreate, DefinitionCreate, SynonymCreate, ExampleCreate
 
 
 def test_health_check(client: TestClient):

@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Search, Plus, Filter, BookOpen, ExternalLink, HelpCircle, Scale, ShieldCheck, X, Sparkles, Check } from 'lucide-react';
+import { Search, Plus, Filter, BookOpen, ExternalLink, HelpCircle, Scale, ShieldCheck, X, Sparkles, Check, ChevronDown } from 'lucide-react';
 import { Term, Domain, Category, Source } from '../types';
 
 interface Props {
@@ -12,13 +12,15 @@ export default function TerminologyDirectory({ onTermAdded }: Props) {
   const [domains, setDomains] = useState<Domain[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [sources, setSources] = useState<Source[]>([]);
-  
+
   // Filtering and Searching State
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [selectedDomain, setSelectedDomain] = useState<string>('all');
   const [selectedCategory, setSelectedCategory] = useState<string>('all');
   const [selectedSource, setSelectedSource] = useState<string>('all');
-  
+  const [showDomainDropdown, setShowDomainDropdown] = useState<boolean>(false);
+  const [showCategoryDropdown, setShowCategoryDropdown] = useState<boolean>(false);
+
   // Modal / Drawer state for adding new terms
   const [showAddModal, setShowAddModal] = useState<boolean>(false);
   const [newEnglishTerm, setNewEnglishTerm] = useState<string>('');
@@ -53,16 +55,33 @@ export default function TerminologyDirectory({ onTermAdded }: Props) {
     }
   };
 
-  const fetchTerms = async () => {
+  const PAGE_SIZE = 15;
+  const [hasMore, setHasMore] = useState<boolean>(true);
+
+  const fetchTerms = async (reset: boolean = false, currentOffset?: number) => {
     try {
       const queryParams = new URLSearchParams();
       if (searchQuery) queryParams.append('q', searchQuery);
       if (selectedDomain !== 'all') queryParams.append('domain_id', selectedDomain);
       if (selectedCategory !== 'all') queryParams.append('category_id', selectedCategory);
-      
+
+      const offset = reset ? 0 : (currentOffset !== undefined ? currentOffset : terms.length);
+      queryParams.append('skip', offset.toString());
+      queryParams.append('limit', PAGE_SIZE.toString());
+
       const res = await fetch(`/api/v1/terminology/terms?${queryParams.toString()}`);
       if (res.ok) {
-        setTerms(await res.json());
+        const newTerms = await res.json();
+        if (reset) {
+          setTerms(newTerms);
+        } else {
+          setTerms(prev => {
+            const existingIds = new Set(prev.map(t => t.id));
+            const filteredNew = newTerms.filter((t: Term) => !existingIds.has(t.id));
+            return [...prev, ...filteredNew];
+          });
+        }
+        setHasMore(newTerms.length === PAGE_SIZE);
       }
     } catch (e) {
       console.error('Error fetching terms: ', e);
@@ -74,7 +93,7 @@ export default function TerminologyDirectory({ onTermAdded }: Props) {
   }, []);
 
   useEffect(() => {
-    fetchTerms();
+    fetchTerms(true, 0);
   }, [searchQuery, selectedDomain, selectedCategory]);
 
   const handleAddTerm = async (e: React.FormEvent) => {
@@ -124,10 +143,10 @@ export default function TerminologyDirectory({ onTermAdded }: Props) {
       setNewDefinition('');
       setNewExample('');
       setNewExampleEn('');
-      
-      fetchTerms();
+
+      fetchTerms(true, 0);
       if (onTermAdded) onTermAdded();
-      
+
       setTimeout(() => {
         setShowAddModal(false);
         setSuccessMsg(null);
@@ -177,31 +196,123 @@ export default function TerminologyDirectory({ onTermAdded }: Props) {
           </div>
 
           {/* Domain Filter */}
-          <div>
-            <select
-              value={selectedDomain}
-              onChange={(e) => setSelectedDomain(e.target.value)}
-              className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-950/30 border border-slate-200 dark:border-slate-800 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/25 focus:border-emerald-500 text-slate-700 dark:text-slate-300 font-medium"
+          <div className="relative">
+            <button
+              onClick={() => {
+                setShowDomainDropdown(!showDomainDropdown);
+                setShowCategoryDropdown(false);
+              }}
+              className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-950/30 border border-slate-200 dark:border-slate-800 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/25 focus:border-emerald-500 text-slate-700 dark:text-slate-300 font-medium flex items-center justify-between cursor-pointer"
             >
-              <option value="all">All Domains (அனைத்து களங்கள்)</option>
-              {domains.map((d) => (
-                <option key={d.id} value={d.id}>{d.name}</option>
-              ))}
-            </select>
+              <span className="truncate">
+                {selectedDomain === 'all'
+                  ? 'All Domains (அனைத்து களங்கள்)'
+                  : (domains.find(d => d.id.toString() === selectedDomain)?.name || 'Select Domain')
+                }
+              </span>
+              <ChevronDown className={`w-3.5 h-3.5 ml-2 transition-transform duration-200 ${showDomainDropdown ? 'rotate-180' : ''}`} />
+            </button>
+
+            <AnimatePresence>
+              {showDomainDropdown && (
+                <>
+                  <div className="fixed inset-0 z-40" onClick={() => setShowDomainDropdown(false)} />
+                  <motion.div
+                    initial={{ opacity: 0, y: 5 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: 5 }}
+                    transition={{ duration: 0.1 }}
+                    className="absolute left-0 mt-1 w-full max-h-60 overflow-y-auto bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-800/80 rounded-2xl shadow-xl z-50 py-1.5 flex flex-col"
+                  >
+                    <button
+                      onClick={() => {
+                        setSelectedDomain('all');
+                        setShowDomainDropdown(false);
+                      }}
+                      className={`px-3.5 py-2 text-left text-xs font-semibold hover:bg-emerald-50 dark:hover:bg-emerald-950/20 hover:text-emerald-600 dark:hover:text-emerald-400 transition-colors flex items-center justify-between ${selectedDomain === 'all' ? 'text-emerald-600 dark:text-emerald-400 bg-emerald-50/40 dark:bg-emerald-950/10' : 'text-slate-700 dark:text-slate-300'
+                        }`}
+                    >
+                      <span>All Domains (அனைத்து களங்கள்)</span>
+                      {selectedDomain === 'all' && <Check className="w-3.5 h-3.5" />}
+                    </button>
+                    {domains.map((d) => (
+                      <button
+                        key={d.id}
+                        onClick={() => {
+                          setSelectedDomain(d.id.toString());
+                          setShowDomainDropdown(false);
+                        }}
+                        className={`px-3.5 py-2 text-left text-xs font-semibold hover:bg-emerald-50 dark:hover:bg-emerald-950/20 hover:text-emerald-600 dark:hover:text-emerald-400 transition-colors flex items-center justify-between ${selectedDomain === d.id.toString() ? 'text-emerald-600 dark:text-emerald-400 bg-emerald-50/40 dark:bg-emerald-950/10' : 'text-slate-700 dark:text-slate-300'
+                          }`}
+                      >
+                        <span>{d.name}</span>
+                        {selectedDomain === d.id.toString() && <Check className="w-3.5 h-3.5" />}
+                      </button>
+                    ))}
+                  </motion.div>
+                </>
+              )}
+            </AnimatePresence>
           </div>
 
           {/* Category Filter */}
-          <div>
-            <select
-              value={selectedCategory}
-              onChange={(e) => setSelectedCategory(e.target.value)}
-              className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-950/30 border border-slate-200 dark:border-slate-800 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/25 focus:border-emerald-500 text-slate-700 dark:text-slate-300 font-medium"
+          <div className="relative">
+            <button
+              onClick={() => {
+                setShowCategoryDropdown(!showCategoryDropdown);
+                setShowDomainDropdown(false);
+              }}
+              className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-950/30 border border-slate-200 dark:border-slate-800 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/25 focus:border-emerald-500 text-slate-700 dark:text-slate-300 font-medium flex items-center justify-between cursor-pointer"
             >
-              <option value="all">All Categories (அனைத்து பிரிவுகள்)</option>
-              {categories.map((c) => (
-                <option key={c.id} value={c.id}>{c.name}</option>
-              ))}
-            </select>
+              <span className="truncate">
+                {selectedCategory === 'all'
+                  ? 'All Categories (அனைத்து பிரிவுகள்)'
+                  : (categories.find(c => c.id.toString() === selectedCategory)?.name || 'Select Category')
+                }
+              </span>
+              <ChevronDown className={`w-3.5 h-3.5 ml-2 transition-transform duration-200 ${showCategoryDropdown ? 'rotate-180' : ''}`} />
+            </button>
+
+            <AnimatePresence>
+              {showCategoryDropdown && (
+                <>
+                  <div className="fixed inset-0 z-40" onClick={() => setShowCategoryDropdown(false)} />
+                  <motion.div
+                    initial={{ opacity: 0, y: 5 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: 5 }}
+                    transition={{ duration: 0.1 }}
+                    className="absolute left-0 mt-1 w-full max-h-60 overflow-y-auto bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-800/80 rounded-2xl shadow-xl z-50 py-1.5 flex flex-col"
+                  >
+                    <button
+                      onClick={() => {
+                        setSelectedCategory('all');
+                        setShowCategoryDropdown(false);
+                      }}
+                      className={`px-3.5 py-2 text-left text-xs font-semibold hover:bg-emerald-50 dark:hover:bg-emerald-950/20 hover:text-emerald-600 dark:hover:text-emerald-400 transition-colors flex items-center justify-between ${selectedCategory === 'all' ? 'text-emerald-600 dark:text-emerald-400 bg-emerald-50/40 dark:bg-emerald-950/10' : 'text-slate-700 dark:text-slate-300'
+                        }`}
+                    >
+                      <span>All Categories (அனைத்து பிரிவுகள்)</span>
+                      {selectedCategory === 'all' && <Check className="w-3.5 h-3.5" />}
+                    </button>
+                    {categories.map((c) => (
+                      <button
+                        key={c.id}
+                        onClick={() => {
+                          setSelectedCategory(c.id.toString());
+                          setShowCategoryDropdown(false);
+                        }}
+                        className={`px-3.5 py-2 text-left text-xs font-semibold hover:bg-emerald-50 dark:hover:bg-emerald-950/20 hover:text-emerald-600 dark:hover:text-emerald-400 transition-colors flex items-center justify-between ${selectedCategory === c.id.toString() ? 'text-emerald-600 dark:text-emerald-400 bg-emerald-50/40 dark:bg-emerald-950/10' : 'text-slate-700 dark:text-slate-300'
+                          }`}
+                      >
+                        <span>{c.name}</span>
+                        {selectedCategory === c.id.toString() && <Check className="w-3.5 h-3.5" />}
+                      </button>
+                    ))}
+                  </motion.div>
+                </>
+              )}
+            </AnimatePresence>
           </div>
         </div>
       </div>
@@ -233,7 +344,7 @@ export default function TerminologyDirectory({ onTermAdded }: Props) {
                 <div className="text-xl font-extrabold text-slate-800 dark:text-slate-100 mb-1">
                   {t.english_term}
                 </div>
-                
+
                 <div className="text-xs text-slate-400 dark:text-slate-500 mb-3">
                   IPA: {t.ipa_tamil || 'N/A'}
                 </div>
@@ -254,6 +365,18 @@ export default function TerminologyDirectory({ onTermAdded }: Props) {
           ))
         )}
       </div>
+
+      {/* Pagination "Show More" Button */}
+      {hasMore && terms.length > 0 && (
+        <div className="flex justify-center mt-6">
+          <button
+            onClick={() => fetchTerms(false, terms.length)}
+            className="px-5 py-2.5 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 text-xs font-bold rounded-xl transition cursor-pointer flex items-center gap-1.5 shadow-sm border border-slate-200/50 dark:border-slate-700/50"
+          >
+            Show More Terms (மேலும் காட்டு)
+          </button>
+        </div>
+      )}
 
       {/* Add New Term Dialog */}
       <AnimatePresence>
