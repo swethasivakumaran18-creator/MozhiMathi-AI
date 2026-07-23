@@ -1,4 +1,4 @@
-# 🧠 MozhiMathi AI
+# 🧠 MozhiMathi AI 
 
 > **An AI-Powered Tamil Technical Linter & Writing Assistant**
 
